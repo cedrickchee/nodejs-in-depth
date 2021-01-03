@@ -234,3 +234,126 @@ const { spawnSync, execSync, execFileSync } = require('child_process');
 ```
 
 Those synchronous versions are potentially useful when trying to simplify scripting tasks or any startup processing tasks, but they should be avoided otherwise.
+
+# The `fork` Function
+
+The `fork` function is a variation of the `spawn` function for spawning node processes. The biggest difference between spawn and `fork` is that a communication channel is established to the child process when using `fork`, so we can use the `send` function on the forked process along with the global process object itself to exchange messages between the parent and forked processes. We do this through the `EventEmitter` module interface. Here’s an example:
+
+The parent file, `parent.js`:
+
+```javascript
+const { fork } = require('child_process');
+
+const forked = fork('child.js');
+
+forked.on('message', (msg) => {
+  console.log('Message from child', msg);
+});
+
+forked.send({ hello: 'world' });
+```
+
+The child file, `child.js`:
+
+```javascript
+process.on('message', (msg) => {
+  console.log('Message from parent:', msg);
+});
+
+let counter = 0;
+
+setInterval(() => {
+  process.send({ counter: counter++ });
+}, 1000);
+```
+
+In the parent file above, we fork `child.js` (which will execute the file with the `node` command) and then we listen for the `message` event. The message event will be emitted whenever the child uses `process.send`, which we’re doing every second.
+
+To pass down messages from the parent to the child, we can execute the `send` function on the forked object itself. Then, in the child script, we can listen to the `message` event on the global `process` object.
+
+When executing the `parent.js` file above, it’ll first send down the `{ hello: 'world' }` object to be printed by the forked child process and then the forked child process will send an incremented counter value every second to be printed by the parent process.
+
+Let’s do a more practical example about the `fork` function.
+
+Let’s say we have an http server that handles two endpoints. One of these endpoints (`/compute` below) is computationally expensive and will take a few seconds to complete. We can use a long for loop to simulate that:
+
+```javascript
+const http = require('http');
+
+const longComputation = () => {
+  let sum = 0;
+  for (let i = 0; i < 1e9; i++) {
+    sum += i;
+  }
+  return sum;
+};
+
+const server = http.createServer();
+
+server.on('request', (req, res) => {
+  if (req.url === '/compute') {
+    const sum = longComputation();
+    return res.end(`Sum is ${sum}`);
+  } else {
+    res.end('Ok');
+  }
+});
+
+server.listen(3000);
+```
+
+This program has a big problem; when the `/compute` endpoint is requested, the server will not be able to handle any other requests because the event loop is busy with the long for loop operation.
+
+There are a few ways we can solve this problem depending on the nature of the long operation but one solution that works for all operations is to just move the computational operation into another process using `fork`.
+
+We first move the whole `longComputation` function into its own file and make it invoke that function when instructed via a message from the main process:
+
+In a new `compute.js` file:
+
+```javascript
+const longComputation = () => {
+  let sum = 0;
+  for (let i = 0; i < 1e9; i++) {
+    sum += i;
+  }
+  return sum;
+};
+
+process.on('message', (msg) => {
+  const sum = longComputation();
+  process.send(sum);
+});
+```
+
+Now, instead of doing the long operation in the main process event loop, we can `fork` the `compute.js` file and use the messages interface to communicate messages between the server and the forked process.
+
+```javascript
+const http = require('http');
+const { fork } = require('child_process');
+
+const server = http.createServer();
+
+server.on('request', (req, res) => {
+  if (req.url === '/compute') {
+    const compute = fork('compute.js');
+    compute.send('start');
+    compute.on('message', (sum) => {
+      return res.end(`Sum is ${sum}`);
+    });
+  } else {
+    res.end('Ok');
+  }
+});
+
+server.listen(3000);
+```
+
+When a request to `/compute` happens now with the above code, we simply send a message to the forked process to start executing the long operation. The main process’s event loop will not be blocked.
+
+Once the forked process is done with that long operation, it can send its result back to the parent process using `process.send`.
+
+In the parent process, we listen to the `message` event on the forked child process itself. When we get that event, we’ll have a `sum` value ready for us to send to the requesting user over http.
+
+The code above is limited by the number of processes we can fork, but when we execute it and request the long computation endpoint over http, the main server is not blocked at all and can take further requests.
+
+Node’s *cluster* module, which is the topic of the [next "Scaling Node Apps" article](./README.md#scaling-nodejs-apps), is based on this idea of child process forking and load balancing the requests among the many forks that we can create on any system.
