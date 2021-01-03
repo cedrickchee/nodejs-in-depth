@@ -1,0 +1,12 @@
+{
+  "name": "nodejs-in-depth",
+  "version": "0.0.1",
+  "description": "Master and understand deeper Node.js fundamentals and internals",
+  "main": "index.js",
+  "scripts": {
+    "start": "node child_process/spawn.js"
+  },
+  "keywords": [],
+  "author": "Cedric Chee",
+  "license": "MIT"
+}
